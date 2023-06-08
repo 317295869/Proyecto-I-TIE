@@ -1,0 +1,106 @@
+// Define los parametros del problema
+real radio = 2;
+real alpha = 0.1;  // define alpha, la longitud de cada electrodo
+int K = 4;  // define K, el numero de electrodos
+real radioobstruccion = 0.7;
+
+// Crea arreglos para contener los angulos de inicio y final para cada segmento
+real[int] angulosInicio(2*K), angulosFinal(2*K);
+
+// Llena los arreglos
+for(int i=0; i<K; i++) {
+  angulosInicio[2*i]   = i*2.0*pi/K;
+  angulosInicio[2*i+1] = angulosInicio[2*i] + alpha*2*pi;
+
+  angulosFinal[2*i]     = angulosInicio[2*i+1];
+  angulosFinal[2*i+1]   = (i+1)*2*pi/K;
+}
+
+// Define las fronteras
+border b(t=0, 1; i) {
+  real tt = t*(angulosFinal[i] - angulosInicio[i]) + angulosInicio[i]; // mapea t de [0,1] a [angulosInicio[i], angulosFinal[i]]
+  x = radio*cos(tt);
+  y = radio*sin(tt);
+  label = (i%2==0 ? i/2+1 : K+1);
+}
+
+//(0,-0.5)
+border obstruccion(t = 0, 2*pi) { x = radioobstruccion*cos(t)-0.5; y = radioobstruccion*sin(t)-0.5; label=4; }
+
+// Construcción del triángulo
+border b1(t = 0, 1) { x = 0.3+t; y = 0.3; label = 5; }
+border b2(t = 0, 1) { x = 1.3 - t; y = 0.3+t; label = 6; }
+border b3(t = 0, 1) { x = 0.3; y = 1.3 - t; label = 7; }
+
+
+// Generate mesh
+int n = 20;
+int[int] nn(2*K);
+for(int i=0; i<2*K; i++) nn[i] = 20;
+mesh Th = buildmesh(b(nn)+obstruccion(n)+b1(n*0.7)+b2(n*0.7)+b3(n*0.7));
+
+//Estas son las etiquetas de cada region
+
+//Etiqueta del circulo exterior
+int RegionCE = Th(-1.0, 0.99).region;
+cout << "Etiqueta del circulo exterior "<< RegionCE << endl;
+
+//Etiqueta del circulo chico
+int RegionCI = Th(-0.1, -0.6).region;
+cout << "Etiqueta del circulo interior "<< RegionCI << endl;
+
+//Etiqueta del triangulo
+int RegionT = Th(0.94, 1.24).region;
+cout << "Etiqueta del triangulo "<< RegionT << endl;
+
+
+// Define finite element space
+fespace Vh(Th, P1);
+int ndf = Vh.ndof;
+fespace Vh0(Th, P0);
+Vh0 sigma;
+Vh u, v;
+
+//Definiendo sigma= 0.1 si estamos en el circulo exterior, 
+//                  1.0 si estamos en el circulo chico
+//					10.0 si estamos en el triangulo
+sigma = (region == RegionCE)*0.1 + (region == RegionCI)*1.0 
+ + (region == RegionT)*.1;
+//plot(sigma,value=1,dim=3,wait=1,fill=1);
+
+
+//Definimos a la matriz A
+varf va(u,v) = int2d(Th)( sigma*dx(u)*dx(v) + dy(u)*dy(v) );
+varf vb(u,v)= int2d(Th)(1.*v);
+
+//Esta parte es la que tiene que variar
+// Hay corriente en electrodo e_i,e_k,e_l entonces:
+// Assumimos que I_j/|e_j| = 1
+// varf vg(u,v)= int1d(Th,e_i,e_k,e_l)(1.*v);
+
+
+// Si I_j/|e_j| = c con  j=1,4
+//estamos poniendo corriente c en el electro 1,4
+// varf vg(u,v)= int1d(Th,1,4)(c.*v);
+
+varf vg(u,v)= int1d(Th,3,4)(1.*v);
+
+matrix A=va(Vh,Vh);
+real[int]  B = vb(0,Vh); 	
+real[int] g = vg(0,Vh);
+
+matrix AA = [ [ A ,  B ] ,
+              [ B', 0 ] ] ;
+
+real[int]  gg(ndf+1),l(1);
+// build the block rhs 
+gg = [ g, 0];
+set(AA,solver=UMFPACK);
+real[int] x = AA^-1*gg; // solve the linear systeme 
+
+[u[],l] = x;  // set the value 
+plot(u,dim=3,wait=1,nbiso=400);
+
+//evaluar a u
+cout <<"evaluacion de u: " << u(1.5,1.0) << endl;
+
