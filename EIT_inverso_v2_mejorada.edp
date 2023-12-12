@@ -1,0 +1,172 @@
+//////////////////////////////////////
+// Parámetros del problema
+real radio = 1.0;
+real longitudElectrodo = 0.03;
+int numeroElectrodos = 4;
+real radioObstruccion = 0.2;
+
+// Ángulos de inicio y fin para cada segmento
+real[int] anguloInicio(2 * numeroElectrodos), anguloFin(2 * numeroElectrodos);
+
+// Llenado de los arreglos de ángulos
+for(int i = 0; i < numeroElectrodos; i++) {
+  anguloInicio[2 * i] = i * 2 * pi / numeroElectrodos;
+  anguloInicio[2 * i + 1] = anguloInicio[2 * i] + longitudElectrodo * 2 * pi;
+
+  anguloFin[2 * i] = anguloInicio[2 * i + 1];
+  anguloFin[2 * i + 1] = (i + 1) * 2 * pi / numeroElectrodos;
+}
+
+// Fronteras
+border b(t = 0, 1; i) {
+  real tt = t * (anguloFin[i] - anguloInicio[i]) + anguloInicio[i];
+  x = radio * cos(tt);
+  y = radio * sin(tt);
+  label = (i % 2 == 0) ? i / 2 + 1 : numeroElectrodos + 1;
+}
+
+border obstruccion(t = 0, 2 * pi) { 
+  x = radioObstruccion * 2*cos(t); 
+  y = radioObstruccion * sin(t); 
+  label = 10; 
+}
+
+// Ajuste de malla
+real factorEscala = 15.0;
+int[int] nn(2 * numeroElectrodos);
+for(int i = 0; i < 2 * numeroElectrodos; i++) {
+  real deltaTheta = anguloFin[i] - anguloInicio[i];
+  real longitudArco = radio * abs(deltaTheta);
+  nn[i] = max(1, int(factorEscala * longitudArco));
+}
+int n = max(1, int(factorEscala * (2 * pi * radioObstruccion)));
+mesh Th = buildmesh(b(nn) + obstruccion(n));
+plot(Th,wait=1);
+// Regiones
+int regionInclusion = Th(0.99, 0.99).region;
+int regionExterior = Th(0, 0).region;
+/////////////////////////////////////////
+
+
+// Espacio de elementos finitos
+fespace Vh(Th, P1);
+int ndf = Vh.ndof;
+fespace Vh0(Th, P0);
+Vh0 sigma;
+Vh datos, u, v, gradientePrueba, fuente;
+
+fuente = x;
+
+sigma = (region == regionInclusion) * 0.2 + (region == regionExterior) * 0.5;
+plot(sigma, value = 1, dim = 3, wait = 1, fill = 1);
+
+
+//Definimos a la matriz A
+varf va(u, v) = int2d(Th)(sigma * (dx(u) * dx(v) + dy(u) * dy(v)));
+varf vb(u, v) = int2d(Th)(1.0 * v);
+varf vg(u, v) = int1d(Th, 2, 4)(fuente * v);
+real[int] B = vb(0., Vh);
+real[int] g = vg(0., Vh);
+
+// Problema primal
+func real[int] primal(real[int] & nsigma) {
+  Vh solucion;
+  sigma[] = nsigma;
+  matrix A = va(Vh, Vh);
+  matrix AA = [[A, B], [B', 0]];
+  real[int] gg(ndf + 1), l(1);
+  gg = [g, 0.];
+  set(AA, solver = UMFPACK);
+  real[int] solucionVect = AA^-1 * gg;
+  [solucion[], l] = solucionVect;
+  return solucion[];
+}
+
+// Datos sintéticos
+datos[] = primal(sigma[]);
+
+// Problema adjunto
+func real[int] adjunto(real[int] & nsigma) {
+  Vh solucion;
+  sigma[] = nsigma;
+  matrix A = va(Vh, Vh);
+  matrix AA = [[A, B], [B', 0]];
+  real[int] gg(ndf + 1), l(1);
+  gg = [g, 0.];
+  set(AA, solver = UMFPACK);
+  real[int] solucionVect = AA^-1 * gg;
+  [solucion[], l] = solucionVect;
+
+  varf vgadj(u, v) = int1d(Th)(-(solucion - datos) * v);
+  real[int] ggadj = vgadj(0., Vh);
+  gg = [ggadj, 0.];
+  solucionVect = AA^-1 * gg;
+  [solucion[], l] = solucionVect;
+  return solucion[];
+}
+
+
+plot(datos, dim = 2, wait = 1, nbiso = 400);
+
+plot(datos, dim = 3, wait = 1, nbiso = 400);
+
+// Funciones objetivo y su gradiente
+func real J(real[int] & nsigma) {
+  Vh estimacion;
+  estimacion[] = primal(nsigma);
+  real error = 0.5 * int1d(Th)((estimacion - datos)^2.0);
+  return error;
+}
+
+func real[int] DJ(real[int] & nsigma) {
+  Vh uprimal, uadjunto;
+  uprimal[] = primal(nsigma);
+  uadjunto[] = adjunto(nsigma);
+  Vh0 gradiente;
+  gradiente = dx(uprimal) * dx(uadjunto) + dy(uprimal) * dy(uadjunto);
+  return gradiente[];
+}
+
+// Método de gradiente descendente
+real longitudPaso = 0.001;
+int maxIteraciones = 100;
+real tolerancia = 1.e-6;
+Vh0 sigmaNuevo, sigmaViejo;
+sigmaViejo = 0.2;
+
+plot(sigmaViejo, value=1, dim=3, wait=1, fill=1);
+
+// Iteraciones del método de gradiente descendiente
+for (int k = 0; k < maxIteraciones; k++) {
+  real errorViejo = J(sigmaViejo[]);
+  real[int] gradiente = DJ(sigmaViejo[]);
+
+  for (int i = 0; i < sigmaViejo[].n; i++) {
+    sigmaNuevo[][i] = sigmaViejo[][i] - longitudPaso * gradiente[i];
+  }
+
+  // Proyección: Asegurarse de que sigma_new esté dentro de un rango deseado [m, M] si es necesario
+   sigmaNuevo = min( max(sigmaNuevo, 0.2), 1.0 );
+
+    // Verifica la convergencia
+    real errorNuevo = J(sigmaNuevo[]);
+    if (errorNuevo < errorViejo) {
+        sigmaViejo = sigmaNuevo;
+        longitudPaso = 1.3*longitudPaso;
+    }
+    else{		
+		longitudPaso = 0.5*longitudPaso;
+		}
+	if(longitudPaso < tolerancia){
+		break;
+		}
+  plot(sigmaViejo, dim=3, fill=1);
+
+  // (Opcional) Imprimir información de la iteración
+  cout << "Iteracion " << k << "error = "<< errorNuevo << " " << errorViejo << " paso = " << longitudPaso << endl;
+}
+
+// Resultado final
+sigma = sigmaNuevo;
+plot(sigma, value=1, dim=3, wait=1, fill=1);
+
